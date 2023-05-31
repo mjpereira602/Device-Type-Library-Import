@@ -55,14 +55,14 @@ class NetBox:
             self.modules = True
 
     def get_manufacturers(self):
-        return {str(item): item for item in self.netbox.dcim.manufacturers.all()}
+        return {str(item).lower(): item for item in self.netbox.dcim.manufacturers.all()}
 
     def create_manufacturers(self, vendors):
         to_create = []
         self.existing_manufacturers = self.get_manufacturers()
         for vendor in vendors:
             try:
-                manGet = self.existing_manufacturers[vendor["name"]]
+                manGet = self.existing_manufacturers[vendor["name"].lower()]
                 self.handle.verbose_log(f'Manufacturer Exists: {manGet.name} - {manGet.id}')
             except KeyError:
                 to_create.append(vendor)
@@ -86,6 +86,29 @@ class NetBox:
             src_file = device_type["src"]
             del device_type["src"]
 
+            # Move pre-existing device-types out of the way
+            try:
+                existing = None
+                existing = self.device_types.existing_device_types[device_type["model"].lower()]
+                self.handle.verbose_log(f'Device Type Exists: {existing.manufacturer.name} - '
+                    + f'{existing.model} - {existing.id}')
+                
+                # move existing device-type out of the way.
+                try:
+                    existing.model = f"{existing.model}-existing"
+                    existing.slug = f"{existing.slug}-existing"
+                    existing.save()
+                    self.handle.verbose_log(f'Renamed Device Type to: {existing.manufacturer.name} - '
+                        + f'{existing.model} - {existing.id}')
+                
+                except Exception as e:
+                    self.handle.log(f'Error {e.error} renaming device type:'
+                                    f'{existing.manufacturer.name} - ' + f'{existing.model}')
+                    continue
+
+            except KeyError:
+                pass
+
             # Pre-process front/rear_image flag, remove it if present
             saved_images = {}
             image_base = os.path.dirname(src_file).replace("device-types","elevation-images")
@@ -99,21 +122,25 @@ class NetBox:
                         else:
                           self.handle.log(f"Error locating image file using '{image_glob}'")
                     del device_type[i]
-
+            
             try:
-                dt = self.device_types.existing_device_types[device_type["model"]]
-                self.handle.verbose_log(f'Device Type Exists: {dt.manufacturer.name} - '
+                dt = self.netbox.dcim.device_types.create(device_type)
+                self.counter.update({'added': 1})
+                self.handle.verbose_log(f'Device Type Created: {dt.manufacturer.name} - '
                     + f'{dt.model} - {dt.id}')
-            except KeyError:
-                try:
-                    dt = self.netbox.dcim.device_types.create(device_type)
-                    self.counter.update({'added': 1})
-                    self.handle.verbose_log(f'Device Type Created: {dt.manufacturer.name} - '
-                        + f'{dt.model} - {dt.id}')
-                except pynetbox.RequestError as e:
-                    self.handle.log(f'Error {e.error} creating device type:'
-                                    f' {device_type["manufacturer"]["name"]} {device_type["model"]}')
-                    continue
+                
+                # Copy tags, comments and custom_fields from old device_type to new.
+                if existing:
+                    dt.tags = existing.tags
+                    dt.custom_fields = existing.custom_fields
+                    if existing.comments:
+                        dt.comments = '  \n'.join([dt.comments, existing.comments])
+                    dt.save()
+
+            except pynetbox.RequestError as e:
+                self.handle.log(f'Error {e.error} creating device type:'
+                                f' {device_type["manufacturer"]["name"]} {device_type["model"]}')
+                continue
 
             if "interfaces" in device_type:
                 self.device_types.create_interfaces(device_type["interfaces"], dt.id)
@@ -139,6 +166,24 @@ class NetBox:
             # Finally, update images if any
             if saved_images:
                 self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
+
+            # Rehome devices to recreated device_type if device_type was already existing.
+            if existing:
+                try:
+                    existing_device_updates = [
+                        {
+                            'id': device.id,
+                            'device_type': dt.id,
+                        }
+                        for device in self.netbox.dcim.devices.filter(device_type_id=existing.id, brief=1)
+                    ]
+                    if existing_device_updates:
+                        self.netbox.dcim.devices.update(existing_device_updates)
+                    existing.delete()
+                except Exception as e:
+                    breakpoint()
+                    continue
+                pass
 
     def create_module_types(self, module_types):
         all_module_types = {}
@@ -191,7 +236,7 @@ class DeviceTypes:
         self.ignore_ssl = ignore_ssl
 
     def get_device_types(self):
-        return {str(item): item for item in self.netbox.dcim.device_types.all()}
+        return {str(item).lower(): item for item in self.netbox.dcim.device_types.all()}
 
     def get_power_ports(self, device_type):
         return {str(item): item for item in self.netbox.dcim.power_port_templates.filter(devicetype_id=device_type)}
