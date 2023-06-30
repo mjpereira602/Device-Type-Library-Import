@@ -92,7 +92,8 @@ class NetBox:
                     existing.save()
                     self.handle.verbose_log(f'Renamed Device Type to: {existing.manufacturer.name} - '
                         + f'{existing.model} - {existing.id} ' + f'{existing.u_height}u ' +
-                        f'{ "full depth" if existing.is_full_depth else "half depth" }'
+                        f'{ "full depth" if existing.is_full_depth else "half depth" } ' +
+                        f'{ existing.device_count } instances.'
                     )
                 
                 except Exception as e:
