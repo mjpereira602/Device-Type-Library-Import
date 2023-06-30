@@ -91,7 +91,9 @@ class NetBox:
                     existing.slug = f"{existing.slug}-existing"
                     existing.save()
                     self.handle.verbose_log(f'Renamed Device Type to: {existing.manufacturer.name} - '
-                        + f'{existing.model} - {existing.id}')
+                        + f'{existing.model} - {existing.id} ' + f'{existing.u_height}u ' +
+                        f'{ "full depth" if existing.is_full_depth else "half depth" }'
+                    )
                 
                 except Exception as e:
                     self.handle.log(f'Error {e.error} renaming device type:'
@@ -105,7 +107,9 @@ class NetBox:
                 dt = self.netbox.dcim.device_types.create(device_type)
                 self.counter.update({'added': 1})
                 self.handle.verbose_log(f'Device Type Created: {dt.manufacturer.name} - '
-                    + f'{dt.model} - {dt.id}')
+                    + f'{dt.model} - {dt.id} ' + f'{ dt.u_height }u ' + 
+                    f'{ "full depth" if dt.is_full_depth else "half depth" }'
+                )
                 
                 # Copy tags, comments and custom_fields from old device_type to new.
                 if existing:
