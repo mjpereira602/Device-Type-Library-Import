@@ -89,11 +89,13 @@ class NetBox:
             # Move pre-existing device-types out of the way
             try:
                 existing = None
-                existing = self.device_types.existing_device_types[device_type["model"].lower()]
+                existing = self.device_types.existing_device_types[
+                    f"{ device_type['manufacturer']['name'].lower() }.{ device_type['model'].lower() }"
+                ]
                 self.handle.verbose_log(f'Device Type Exists: {existing.manufacturer.name} - '
                     + f'{existing.model} - {existing.id}')
                 
-                # move existing device-type out of the way.
+                # else move device type out of the way for now.
                 try:
                     existing.model = f"{existing.model}-existing"
                     existing.slug = f"{existing.slug}-existing"
@@ -101,7 +103,9 @@ class NetBox:
                     self.handle.verbose_log(f'Renamed Device Type to: {existing.manufacturer.name} - '
                         + f'{existing.model} - {existing.id} ' + f'{existing.u_height}u ' +
                         f'{ "full depth" if existing.is_full_depth else "half depth" } ' +
-                        f'{ existing.device_count } instances.'
+                        f'{ existing.device_count } instances. ' +
+                        f'replacement device is { device_type.get("u_height", 0) }u ' +
+                        f'{ "full depth" if device_type.get("is_full_depth", True) else "half depth" }'
                     )
                 
                 except Exception as e:
@@ -111,6 +115,10 @@ class NetBox:
 
             except KeyError:
                 pass
+
+            except Exception as e:
+                breakpoint()
+                continue
 
             # Pre-process front/rear_image flag, remove it if present
             saved_images = {}
@@ -134,13 +142,34 @@ class NetBox:
                     f'{ "full depth" if dt.is_full_depth else "half depth" }'
                 )
                 
-                # Copy tags, comments and custom_fields from old device_type to new.
-                if existing:
-                    dt.tags = existing.tags
-                    dt.custom_fields = existing.custom_fields
-                    if existing.comments:
-                        dt.comments = '  \n'.join([dt.comments, existing.comments])
-                    dt.save()
+                try:
+                    if existing:
+                        # Copy tags, comments and custom_fields from old device_type to new.
+                        dt.tags = existing.tags
+                        dt.custom_fields = existing.custom_fields
+                        if existing.comments:
+                            dt.comments = '  \n'.join([dt.comments, existing.comments])
+                        dt.save()
+
+                        # Reassociate devices
+                        existing_device_updates = [
+                            {
+                                'id': device.id,
+                                'device_type': dt.id,
+                            }
+                            for device in self.netbox.dcim.devices.filter(device_type_id=existing.id, brief=1)
+                        ]
+                        if existing_device_updates:
+                            self.netbox.dcim.devices.update(existing_device_updates)
+
+                        # remove old device type
+                        existing.delete()
+
+                except Exception as e:
+                    breakpoint()
+                    continue
+                pass
+
 
             except pynetbox.RequestError as e:
                 self.handle.log(f'Error {e.error} creating device type:'
@@ -241,7 +270,10 @@ class DeviceTypes:
         self.ignore_ssl = ignore_ssl
 
     def get_device_types(self):
-        return {str(item).lower(): item for item in self.netbox.dcim.device_types.all()}
+        return {
+            f"{item.manufacturer.name.lower()}.{item.model.lower()}": item
+            for item in self.netbox.dcim.device_types.all()
+        }
 
     def get_power_ports(self, device_type):
         return {str(item): item for item in self.netbox.dcim.power_port_templates.filter(devicetype_id=device_type)}
