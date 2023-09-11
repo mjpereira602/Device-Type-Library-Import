@@ -89,32 +89,32 @@ class NetBox:
             # Move pre-existing device-types out of the way
             try:
                 existing = None
-                existing = self.device_types.existing_device_types[
-                    f"{ device_type['manufacturer']['name'].lower() }.{ device_type['model'].lower() }"
-                ]
-                self.handle.verbose_log(f'Device Type Exists: {existing.manufacturer.name} - '
-                    + f'{existing.model} - {existing.id}')
-                
-                # else move device type out of the way for now.
-                try:
-                    existing.model = f"{existing.model}-existing"
-                    existing.slug = f"{existing.slug}-existing"
-                    existing.save()
-                    self.handle.verbose_log(f'Renamed Device Type to: {existing.manufacturer.name} - '
-                        + f'{existing.model} - {existing.id} ' + f'{existing.u_height}u ' +
-                        f'{ "full depth" if existing.is_full_depth else "half depth" } ' +
-                        f'{ existing.device_count } instances. ' +
-                        f'replacement device is { device_type.get("u_height", 0) }u ' +
-                        f'{ "full depth" if device_type.get("is_full_depth", True) else "half depth" }'
-                    )
-                
-                except Exception as e:
-                    self.handle.log(f'Error {e.error} renaming device type:'
-                                    f'{existing.manufacturer.name} - ' + f'{existing.model}')
-                    continue
+                existing = self.netbox.dcim.device_types.get(
+                    manufacturer_name__ie=device_type['manufacturer']['name'],
+                    model__ie=device_type['model']
+                )
+                if existing is not None:
 
-            except KeyError:
-                pass
+                    self.handle.verbose_log(f'Device Type Exists: {existing.manufacturer.name} - '
+                        + f'{existing.model} - {existing.id}')
+                
+                    # else move device type out of the way for now.
+                    try:
+                        existing.model = f"{existing.model}-existing"
+                        existing.slug = f"{existing.slug}-existing"
+                        existing.save()
+                        self.handle.verbose_log(f'Renamed Device Type to: {existing.manufacturer.name} - '
+                            + f'{existing.model} - {existing.id} ' + f'{existing.u_height}u ' +
+                            f'{ "full depth" if existing.is_full_depth else "half depth" } ' +
+                            f'{ existing.device_count } instances. ' +
+                            f'replacement device is { device_type.get("u_height", 0) }u ' +
+                            f'{ "full depth" if device_type.get("is_full_depth", True) else "half depth" }'
+                        )
+                
+                    except Exception as e:
+                        self.handle.log(f'Error {e.error} renaming device type:'
+                                        f'{existing.manufacturer.name} - ' + f'{existing.model}')
+                        continue
 
             except Exception as e:
                 breakpoint()
@@ -142,35 +142,6 @@ class NetBox:
                     f'{ "full depth" if dt.is_full_depth else "half depth" }'
                 )
                 
-                try:
-                    if existing:
-                        # Copy tags, comments and custom_fields from old device_type to new.
-                        dt.tags = existing.tags
-                        dt.custom_fields = existing.custom_fields
-                        if existing.comments:
-                            dt.comments = '  \n'.join([dt.comments, existing.comments])
-                        dt.save()
-
-                        # Reassociate devices
-                        existing_device_updates = [
-                            {
-                                'id': device.id,
-                                'device_type': dt.id,
-                            }
-                            for device in self.netbox.dcim.devices.filter(device_type_id=existing.id, brief=1)
-                        ]
-                        if existing_device_updates:
-                            self.netbox.dcim.devices.update(existing_device_updates)
-
-                        # remove old device type
-                        existing.delete()
-
-                except Exception as e:
-                    breakpoint()
-                    continue
-                pass
-
-
             except pynetbox.RequestError as e:
                 self.handle.log(f'Error {e.error} creating device type:'
                                 f' {device_type["manufacturer"]["name"]} {device_type["model"]}')
@@ -201,23 +172,32 @@ class NetBox:
             if saved_images:
                 self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
 
-            # Rehome devices to recreated device_type if device_type was already existing.
-            if existing:
-                try:
-                    existing_device_updates = [
-                        {
-                            'id': device.id,
-                            'device_type': dt.id,
-                        }
-                        for device in self.netbox.dcim.devices.filter(device_type_id=existing.id, brief=1)
-                    ]
-                    if existing_device_updates:
-                        self.netbox.dcim.devices.update(existing_device_updates)
+            # if device_type was pre-existing rehome associated devices.
+            try:
+                if existing is not None:
+                    # Copy tags, comments and custom_fields from old device_type to new.
+                    dt.tags = existing.tags
+                    dt.custom_fields = existing.custom_fields
+                    if existing.comments:
+                        dt.comments = '  \n'.join([dt.comments, existing.comments])
+                    dt.save()
+
+                    # Reassociate devices
+                    for device in self.netbox.dcim.devices.filter(device_type_id=existing.id):
+
+                        try:
+                            device.device_type = dt
+                            device.save()
+                        except Exception as e:
+                            breakpoint()
+                            continue
+
                     existing.delete()
-                except Exception as e:
-                    breakpoint()
-                    continue
-                pass
+
+            except Exception as e:
+                breakpoint()
+                continue
+            pass
 
     def create_module_types(self, module_types):
         all_module_types = {}
